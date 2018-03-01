@@ -21,7 +21,8 @@
 
 #include <BLESerial.h>
 #include <Wire.h>
-#include <ArduinoLowPower.h>
+#include "ArduinoLowPower.h"
+
 
 // create ble serial instance
 BLESerial bleSerial = BLESerial();
@@ -34,35 +35,146 @@ const int MPU_addr = 0x69;
 
 int16_t AcX, AcY, AcZ, Tmp, GyX, GyY, GyZ;
 
+// Battery Monitoring
+float BatteryLevelAvg = 0.0;
+int BatteryLevelArray[3];
+uint8_t BatteryLevelCursor = 0;
+uint8_t IsBatteryLevelValid = 0;
+
+// Timestamps
+int LastSamplingTime = 0;
+int LastBatteryReadingTime = 0;
+
+
 void setup() {
+  
   // Custom services and characteristics can be added as well
   bleSerial.setLocalName("MOVUINO");
+
+  // Wake up of MPU6050
   Wire.begin();
   Wire.beginTransmission(MPU_addr);
   Wire.write(0x6B); // PWR_MGMT_1 register
-
-  // Wire.write(0); // set to zero (wakes up the MPU-6050)
+  Wire.write((uint8_t)0x00); // set to zero (wakes up the MPU-6050)
   Wire.endTransmission(true);
-  Serial.begin(9600);
-  Serial.write("hello from Movuino!");
-
-  // Initialize BLE led
+  
+  // Initialize BLE led (not used)
   pinMode(BLE_LED, OUTPUT);
-  // Bettery
+  digitalWrite(BLE_LED, HIGH);
+  
+  // Battery
   pinMode(A2, INPUT);
 
   // Start BLE
-  // TODO: only if enough battery
   bleSerial.begin();
-
-  // TODO: Shutdown BME680 needs to get the i2c addr --> using the i2c scanner (need serial to work)
-  // Wire.beginTransmission(BME_addr);
-  // Wire.write(0x74);
-  // Wire.write(0x00);
-  // Wire.endTransmission();
 }
 
-void read_mpu() {
+
+void loop() {
+  
+  // Monitoring of battery level
+  if (millis() >= LastBatteryReadingTime + 1000)
+  {
+    // reading timestamp
+    LastBatteryReadingTime = millis();
+
+    // update battery informations
+    BATTERY_ReadLevel();
+  }
+
+  // Is battery low ?
+  if (BATTERY_IsLowLevel())
+  {
+    // 10 sec low power mode
+    POWER_SetLowPowerMode(10000);
+  }
+  // Battery OK, are we advertising or connected ?
+  else if (bleSerial.status() != ADVERTISING) 
+  {
+    if (millis() >= LastSamplingTime + 28)
+    {
+      // sampling timestamp
+      LastSamplingTime = millis();
+         
+      // reading and sending 
+      MPU6050_ReadData();
+      BLE_SendData();
+    
+      // no activity for 23 ms
+      LowPower.idle(23);
+    }
+  }
+  else
+  {
+    // no activity for 10 ms
+    LowPower.idle(10);    
+  }
+}
+
+// Function to read battery level
+void BATTERY_ReadLevel() {
+  
+  // read of analog value
+  BatteryLevelArray[BatteryLevelCursor] = analogRead(A2);
+
+  // is average valid ?
+  BatteryLevelCursor++;
+  if (BatteryLevelCursor >= 3)
+  {
+    IsBatteryLevelValid = 1;
+    BatteryLevelCursor = 0;
+  }
+
+  // making decision
+  if (IsBatteryLevelValid)
+  {
+    BatteryLevelAvg = 0.20142831 * (BatteryLevelArray[0] + BatteryLevelArray[1] + BatteryLevelArray[2]) / 3;
+    BatteryLevelAvg *= 4.3;
+  }
+}
+
+
+// Funciton to detect low battery level
+uint8_t BATTERY_IsLowLevel()
+{
+  uint8_t IsLowLevel = 0;
+
+  if ((1 == IsBatteryLevelValid) && (3500.0 > BatteryLevelAvg))
+  {
+    IsLowLevel = 1;
+  }
+
+  return IsLowLevel;
+}
+
+
+// Function to set movuino system in low power mode
+void POWER_SetLowPowerMode(int SleepTime) {
+
+  // Sleep of MPU6050
+  Wire.beginTransmission(MPU_addr);
+  Wire.write(0x6B); // PWR_MGMT_1 register
+  Wire.write(0x40);
+  Wire.endTransmission(true);
+
+  // end of ble communication
+  bleSerial.end();
+  
+  // Triggers a SleepTime ms sleep (the device will be woken up only by the registered wakeup sources and by internal RTC)
+  LowPower.sleep(SleepTime);  
+
+  // Reset of timestamps
+  LastSamplingTime = 0;
+  LastBatteryReadingTime = 0;
+
+  // start of ble communication
+  bleSerial.begin();
+}
+
+
+// Read accelerometer and gyroscope data
+void MPU6050_ReadData() {
+  
   Wire.beginTransmission(MPU_addr);
 
   // Starting with register 0x3B (ACCEL_XOUT_H)
@@ -81,53 +193,12 @@ void read_mpu() {
   GyZ = Wire.read() << 8 | Wire.read(); // 0x47 (GYRO_ZOUT_H) & 0x48 (GYRO_ZOUT_L)
 }
 
-void loop() {
-  // Battery value and battery voltage
-  int BatteryValue = analogRead(A2);
-  float voltage = 0.0002014283 * BatteryValue;
-  float batteryVoltage= voltage*4.3;
-  
-  // TODO: only if enough battery
-  bleSerial.poll();
-  read_mpu();
-  spam();
-
-  // Handle the BLE led. Blink when advertising
-  if (bleSerial.status() == ADVERTISING) {
-    digitalWrite(BLE_LED, LOW);
-    delay(200);
-    digitalWrite(BLE_LED, HIGH);
-    delay(200);
-  } else { // If we are not advertising, we are connected
-    digitalWrite(BLE_LED, HIGH);
-  }
-
-  // TODO: only if not enough battery
-  // Triggers a 2000 ms sleep (the device will be woken up only by the registered wakeup sources and by internal RTC)
-  LowPower.sleep(2000);
-}
-
-
-// Forward received from Serial to BLESerial and vice versa
-void forward() {
-  if (bleSerial && Serial) {
-    int byte;
-    while ((byte = bleSerial.read()) > 0) Serial.write((char)byte);
-    while ((byte = Serial.read()) > 0) bleSerial.write((char)byte);
-  }
-}
-
-// Echo all received data back
-void loopback() {
-  if (bleSerial) {
-    int byte;
-    while ((byte = bleSerial.read()) > 0) bleSerial.write(byte);
-  }
-}
-
 // Periodically sent time stamps
-void spam() {
-  if (bleSerial) {
+void BLE_SendData() {
+  if (bleSerial) 
+  {
+    bleSerial.poll();
+    
     bleSerial.write("L");
     bleSerial.write(AcX >> 8);
     bleSerial.write(AcX);
@@ -141,8 +212,7 @@ void spam() {
     bleSerial.write(GyY);
     bleSerial.write(GyZ >> 8);
     bleSerial.write(GyZ);
+    
     bleSerial.flush();
-
-    delay(35);
   }
 }
