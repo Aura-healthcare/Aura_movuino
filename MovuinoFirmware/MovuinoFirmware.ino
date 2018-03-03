@@ -37,9 +37,7 @@ int16_t AcX, AcY, AcZ, Tmp, GyX, GyY, GyZ;
 
 // Battery Monitoring
 float BatteryLevelAvg = 0.0;
-int BatteryLevelArray[3];
-uint8_t BatteryLevelCursor = 0;
-uint8_t IsBatteryLevelValid = 0;
+uint8_t BatteryLevelAvgCount = 0;
 
 // Timestamps
 int LastSamplingTime = 0;
@@ -115,36 +113,19 @@ void loop() {
 void BATTERY_ReadLevel() {
   
   // read of analog value
-  BatteryLevelArray[BatteryLevelCursor] = analogRead(A2);
+  BatteryLevelAvg = 0.4 * (float)analogRead(A2) + 0.6 * BatteryLevelAvg;
 
-  // is average valid ?
-  BatteryLevelCursor++;
-  if (BatteryLevelCursor >= 3)
+  if (BatteryLevelAvgCount < 3)
   {
-    IsBatteryLevelValid = 1;
-    BatteryLevelCursor = 0;
-  }
-
-  // making decision
-  if (IsBatteryLevelValid)
-  {
-    BatteryLevelAvg = 0.20142831 * (BatteryLevelArray[0] + BatteryLevelArray[1] + BatteryLevelArray[2]) / 3;
-    BatteryLevelAvg *= 4.3;
+    BatteryLevelAvgCount++;
   }
 }
 
 
-// Funciton to detect low battery level
+// Function to detect low battery level
 uint8_t BATTERY_IsLowLevel()
 {
-  uint8_t IsLowLevel = 0;
-
-  if ((1 == IsBatteryLevelValid) && (3500.0 > BatteryLevelAvg))
-  {
-    IsLowLevel = 1;
-  }
-
-  return IsLowLevel;
+  return (uint8_t)((BatteryLevelAvgCount >= 3) && (3500.0 > BatteryLevelAvg * 0.20142831 * 4.3));
 }
 
 
