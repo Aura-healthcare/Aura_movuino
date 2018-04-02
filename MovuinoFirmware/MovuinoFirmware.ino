@@ -35,7 +35,11 @@ const int MPU_addr = 0x69;
 
 int16_t AcX, AcY, AcZ, Tmp, GyX, GyY, GyZ;
 
+// Reference voltage
+float VRef = 3.3;
+
 // Battery Monitoring
+int BatteryPin = A6;
 float BatteryLevelAvg = 0.0;
 uint8_t BatteryLevelAvgCount = 0;
 
@@ -45,6 +49,8 @@ int LastBatteryReadingTime = 0;
 
 
 void setup() {
+
+  //Serial.begin(115200);
   
   // Custom services and characteristics can be added as well
   bleSerial.setLocalName("MOVUINO");
@@ -61,7 +67,7 @@ void setup() {
   digitalWrite(BLE_LED, HIGH);
   
   // Battery
-  pinMode(A2, INPUT);
+  analogReadResolution(12);
 
   // Start BLE
   bleSerial.begin();
@@ -71,41 +77,39 @@ void setup() {
 void loop() {
   
   // Monitoring of battery level
-  if (millis() >= LastBatteryReadingTime + 1000)
-  {
+  if ((0 == LastBatteryReadingTime) || (millis() > LastBatteryReadingTime + 1000))
+  {    
     // reading timestamp
     LastBatteryReadingTime = millis();
 
     // update battery informations
     BATTERY_ReadLevel();
+  
+    //Serial.println(analogRead(BatteryPin));
+    //Serial.println(BatteryLevelAvg);
   }
 
   // Is battery low ?
   if (BATTERY_IsLowLevel())
   {
+    //Serial.print("Low level : ");
+    //Serial.println(BatteryLevelAvg * (VRef / 4095) * 4.3);
+    
     // 10 sec low power mode
     POWER_SetLowPowerMode(10000);
   }
   // Battery OK, are we advertising or connected ?
   else if (bleSerial.status() != ADVERTISING) 
   {
-    if (millis() >= LastSamplingTime + 28)
-    {
+    if (millis() > LastSamplingTime + 28)
+    {         
       // sampling timestamp
       LastSamplingTime = millis();
-         
+      
       // reading and sending 
       MPU6050_ReadData();
       BLE_SendData();
-    
-      // no activity for 23 ms
-      LowPower.idle(23);
     }
-  }
-  else
-  {
-    // no activity for 10 ms
-    LowPower.idle(10);    
   }
 }
 
@@ -113,7 +117,14 @@ void loop() {
 void BATTERY_ReadLevel() {
   
   // read of analog value
-  BatteryLevelAvg = 0.4 * (float)analogRead(A2) + 0.6 * BatteryLevelAvg;
+  if (0 == BatteryLevelAvgCount)
+  {
+    BatteryLevelAvg = (float)analogRead(BatteryPin);
+  }
+  else
+  {
+    BatteryLevelAvg = 0.4 * (float)analogRead(BatteryPin) + 0.6 * BatteryLevelAvg;
+  }
 
   if (BatteryLevelAvgCount < 3)
   {
@@ -125,7 +136,7 @@ void BATTERY_ReadLevel() {
 // Function to detect low battery level
 uint8_t BATTERY_IsLowLevel()
 {
-  return (uint8_t)((BatteryLevelAvgCount >= 3) && (3500.0 > BatteryLevelAvg * 0.20142831 * 4.3));
+  return (uint8_t)((BatteryLevelAvgCount >= 3) && (3.5 > BatteryLevelAvg * (VRef / 4095) * 4.3));
 }
 
 
@@ -145,8 +156,8 @@ void POWER_SetLowPowerMode(int SleepTime) {
   LowPower.sleep(SleepTime);  
 
   // Reset of timestamps
-  LastSamplingTime = 0;
   LastBatteryReadingTime = 0;
+  LastSamplingTime = 0;
 
   // start of ble communication
   bleSerial.begin();
@@ -197,3 +208,4 @@ void BLE_SendData() {
     bleSerial.flush();
   }
 }
+
